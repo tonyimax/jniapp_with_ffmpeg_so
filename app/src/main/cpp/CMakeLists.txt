@@ -19,6 +19,9 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE ${FFMPEG_DIR}/${ANDROID_AB
 target_link_libraries(${CMAKE_PROJECT_NAME}
         android
         log
+        avutil
+        avformat
         avcodec
+        swscale
         ${log-lib}
 )
