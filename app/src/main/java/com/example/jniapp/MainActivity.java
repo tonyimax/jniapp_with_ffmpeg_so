@@ -1,8 +1,10 @@
 package com.example.jniapp;
 
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.view.WindowCompat;
 
 import android.os.Bundle;
+import android.view.WindowInsetsController;
 import android.widget.TextView;
 
 import com.example.jniapp.databinding.ActivityMainBinding;
@@ -30,7 +32,22 @@ public class MainActivity extends AppCompatActivity {
         // Example of a call to a native method
         TextView tv = binding.sampleText;
         tv.setText(stringFromJNI());
+        enableImmersiveMode();
         getVideoBuffer();
+    }
+
+    private void enableImmersiveMode() {
+        WindowInsetsController controller = getWindow().getDecorView().getWindowInsetsController();
+        if (controller != null) {
+            // 1. 隐藏系统栏（状态栏和导航栏）
+            controller.hide(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+
+            // 2. 设置系统栏的行为模式
+            controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        }
+
+        // 确保内容延伸到系统栏后面
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
     }
 
     /**
