@@ -9,6 +9,7 @@ import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
+import android.media.MediaCodecList;
 import android.media.MediaFormat;
 import android.os.Build;
 import android.os.Bundle;
@@ -46,7 +47,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private static final String MIME_TYPE = "video/hevc";
     private static final int VIDEO_WIDTH = 1280;
     private static final int VIDEO_HEIGHT = 720;
-    private static final int FRAME_RATE = 60;
+    private static final int FRAME_RATE = 30;
 
     private MediaCodec mMediaCodec;
     private DecoderThread mDecoderThread;
@@ -70,10 +71,29 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
 
 
         if (isH265Supported()){
-            new Thread(() -> {
+            /*new Thread(() -> {
                 System.out.println("===>独立的视频解码线程===");
-                //getVideoBuffer();
-            }).start();
+                getVideoBuffer();
+            }).start();*/
+            MediaCodecList codecList = new MediaCodecList(MediaCodecList.ALL_CODECS);
+            for (MediaCodecInfo codecInfo : codecList.getCodecInfos()) {
+                if (!codecInfo.isEncoder()) { // 找解码器
+                    for (String type : codecInfo.getSupportedTypes()) {
+                        if (type.equalsIgnoreCase("video/hevc")) {
+                            Log.d("===>HEVC Decoder", "Found decoder: " + codecInfo.getName());
+                            MediaCodecInfo.CodecCapabilities caps = codecInfo.getCapabilitiesForType(type);
+                            // 检查支持的Color Formats
+                            for (int colorFormat : caps.colorFormats) {
+                                Log.d("===>HEVC Decoder", "Supported color format: " + colorFormat);
+                            }
+                            // 检查支持的ProfileLevel
+                            for (MediaCodecInfo.CodecProfileLevel pl : caps.profileLevels) {
+                                Log.d("===>HEVC Decoder", "Profile: " + pl.profile + ", Level: " + pl.level);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
     }
@@ -162,12 +182,11 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         try {
             // 创建 H.265 解码器
             mMediaCodec = MediaCodec.createDecoderByType(MIME_TYPE);
-
             // 配置 MediaFormat
             MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, VIDEO_WIDTH, VIDEO_HEIGHT);
             format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
             format.setInteger(MediaFormat.KEY_BIT_RATE, 8000000);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
 
@@ -279,7 +298,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         }
 
         private void decodeH265Stream() throws IOException {
-            byte[] chunk = new byte[1024 * 128]; // 128KB 缓冲区
+            byte[] chunk = new byte[1024 * 1024 ]; // 2m 缓冲区
             boolean sawInputEOS = false;
             boolean sawOutputEOS = false;
             long startTime = System.currentTimeMillis();
