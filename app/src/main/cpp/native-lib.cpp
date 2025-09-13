@@ -1,6 +1,8 @@
 #include <jni.h>
 #include <string>
 #include <android/log.h>
+#include <thread>
+#include <chrono>
 
 extern "C" {
     #include <libavcodec/avcodec.h>
@@ -8,8 +10,15 @@ extern "C" {
     #include <libavutil/imgutils.h>
     #include <libswscale/swscale.h>
 
+    #include <android/native_window.h>
+    #include <android/native_window_jni.h>
+    #include <media/NdkMediaCodec.h>
+    #include <media/NdkMediaFormat.h>
+
     #define LOG_TAG "JNI_FFMPEG_DEMO"
     #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+    #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+    #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOGTAG, __VA_ARGS__)
 
     enum NALUnitType {
         TRAIL_N = 1, TRAIL_R = 0, IDR_W_RADL = 19, IDR_N_LP = 20, CRA_NUT = 21
@@ -54,6 +63,139 @@ Java_com_example_jniapp_MainActivity_stringFromJNI(
     return env->NewStringUTF(hello.c_str());
 }
 
+extern "C" {
+
+JNIEXPORT jlong JNICALL
+Java_com_example_jniapp_MainActivity_nativeInitDecoder(
+        JNIEnv *env,
+        jobject /* this */,
+        jobject surface) {
+
+    // 从 Java Surface 创建 ANativeWindow
+    ANativeWindow *nativeWindow = ANativeWindow_fromSurface(env, surface);
+    if (!nativeWindow) {
+        LOGE("Failed to create ANativeWindow from Surface");
+        return 0;
+    }
+
+    // 创建 MediaCodec 解码器
+    AMediaCodec *mediaCodec = AMediaCodec_createDecoderByType("video/hevc");
+    if (!mediaCodec) {
+        LOGE("Failed to create MediaCodec decoder");
+        ANativeWindow_release(nativeWindow);
+        return 0;
+    }
+
+    // 配置 MediaFormat
+    AMediaFormat *format = AMediaFormat_new();
+    AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, "video/hevc");
+    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, 1280);
+    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, 720);
+    AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, 30);
+
+    // 配置解码器
+    media_status_t status = AMediaCodec_configure(
+            mediaCodec,
+            format,
+            nativeWindow, // 关键：使用 nativeWindow 作为输出 Surface
+            nullptr,
+            0
+    );
+
+    AMediaFormat_delete(format);
+
+    if (status != AMEDIA_OK) {
+        LOGE("Failed to configure MediaCodec: %d", status);
+        AMediaCodec_delete(mediaCodec);
+        ANativeWindow_release(nativeWindow);
+        return 0;
+    }
+
+    // 启动解码器
+    status = AMediaCodec_start(mediaCodec);
+    if (status != AMEDIA_OK) {
+        LOGE("Failed to start MediaCodec: %d", status);
+        AMediaCodec_delete(mediaCodec);
+        ANativeWindow_release(nativeWindow);
+        return 0;
+    }
+
+    // 将指针转换为 long 返回给 Java
+    return reinterpret_cast<jlong>(mediaCodec);
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_jniapp_MainActivity_nativeDecodeFrame(
+        JNIEnv *env,
+        jobject /* this */,
+        jlong decoderHandle,
+        jbyteArray data,
+        jint size,
+        jlong presentationTimeUs) {
+
+    AMediaCodec *mediaCodec = reinterpret_cast<AMediaCodec *>(decoderHandle);
+    if (!mediaCodec) {
+        LOGE("MediaCodec is null");
+        return;
+    }
+
+    // 获取输入缓冲区
+    ssize_t inputBufferIndex = AMediaCodec_dequeueInputBuffer(mediaCodec, 10000);
+    if (inputBufferIndex >= 0) {
+        size_t bufferSize;
+        uint8_t *inputBuffer = AMediaCodec_getInputBuffer(
+                mediaCodec,
+                inputBufferIndex,
+                &bufferSize
+        );
+
+        if (inputBuffer && bufferSize >= size) {
+            // 复制数据到输入缓冲区
+            jbyte *javaData = env->GetByteArrayElements(data, nullptr);
+            memcpy(inputBuffer, javaData, size);
+            env->ReleaseByteArrayElements(data, javaData, 0);
+
+            // 提交输入缓冲区
+            AMediaCodec_queueInputBuffer(
+                    mediaCodec,
+                    inputBufferIndex,
+                    0,
+                    size,
+                    presentationTimeUs,
+                    0
+            );
+        }
+    }
+
+    // 处理输出缓冲区
+    AMediaCodecBufferInfo info;
+    ssize_t outputBufferIndex = AMediaCodec_dequeueOutputBuffer(
+            mediaCodec,
+            &info,
+            10000
+    );
+
+    if (outputBufferIndex >= 0) {
+        // 渲染到 Surface 并释放缓冲区
+        AMediaCodec_releaseOutputBuffer(mediaCodec, outputBufferIndex, true);
+    }
+}
+
+JNIEXPORT void JNICALL
+Java_com_example_jniapp_MainActivity_nativeReleaseDecoder(
+        JNIEnv *env,
+        jobject /* this */,
+        jlong decoderHandle) {
+
+    AMediaCodec *mediaCodec = reinterpret_cast<AMediaCodec *>(decoderHandle);
+    if (mediaCodec) {
+        AMediaCodec_stop(mediaCodec);
+        AMediaCodec_delete(mediaCodec);
+    }
+}
+
+} // extern "C"
+
 extern "C"
 JNIEXPORT void JNICALL
 Java_com_example_jniapp_MainActivity_getVideoBuffer(JNIEnv *env, jobject thiz) {
@@ -63,7 +205,7 @@ Java_com_example_jniapp_MainActivity_getVideoBuffer(JNIEnv *env, jobject thiz) {
     }*/
 
     AVFormatContext* format_ctx = nullptr;
-    if (avformat_open_input(&format_ctx, "rtsp://192.168.1.235:554/live", nullptr, nullptr) != 0) {
+    if (avformat_open_input(&format_ctx, "rtsp://192.168.16.115:8554/live", nullptr, nullptr) != 0) {
         LOGI("===>Could not open input file\n");
         return;
     }
@@ -197,6 +339,18 @@ Java_com_example_jniapp_MainActivity_getVideoBuffer(JNIEnv *env, jobject thiz) {
                 // 控制帧率 for local 265 file open it
                 //SDL_Delay(40); // 约25fps
 
+                //call surface view draw image
+                // 将RGB帧数据传递给Java层显示
+                /*int numBytes = av_image_get_buffer_size(AV_PIX_FMT_RGBA, pCodecCtx->width, pCodecCtx->height, 1);
+                jclass clazz = env->GetObjectClass(thiz);
+                jmethodID methodID = env->GetMethodID(clazz, "onFrameDecoded", "([BII)V");
+                jbyteArray byteArray = env->NewByteArray(numBytes);
+                env->SetByteArrayRegion(byteArray, 0, numBytes, (jbyte *) pFrameYUV->data[0]);
+                env->CallVoidMethod(thiz, methodID, byteArray, pCodecCtx->width, pCodecCtx->height);
+                env->DeleteLocalRef(byteArray);
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));*/
+
+
                 delete[] rgb_data[0];
             }
         }
@@ -212,4 +366,10 @@ Java_com_example_jniapp_MainActivity_getVideoBuffer(JNIEnv *env, jobject thiz) {
         }*/
     }
 
+    // 清理资源
+    av_frame_free(&pFrameYUV);
+    av_packet_free(&packet);
+    avcodec_free_context(&pCodecCtx);
+    avformat_close_input(&format_ctx);
+    sws_freeContext(sws_ctx);
 }

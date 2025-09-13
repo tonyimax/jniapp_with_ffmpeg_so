@@ -8,10 +8,9 @@ add_library(${CMAKE_PROJECT_NAME} SHARED
         native-lib.cpp
 )
 
-find_library(
-        log-lib
-        log
-)
+find_library(log-lib log)
+find_library(android-lib android)
+find_library(mediandk-lib mediandk)
 
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE ${FFMPEG_INCLUDE_DIR})
 target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE ${FFMPEG_DIR}/${ANDROID_ABI})
@@ -24,4 +23,6 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
         avcodec
         swscale
         ${log-lib}
+        ${android-lib}
+        ${mediandk-lib}
 )
