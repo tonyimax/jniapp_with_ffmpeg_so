@@ -190,6 +190,37 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             format.setInteger(MediaFormat.KEY_BIT_RATE, 8000000);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
 
+            // --- 关键代码开始 ---
+            // 1. 查询解码器支持的颜色格式
+            MediaCodecInfo.CodecCapabilities caps = mMediaCodec.getCodecInfo().getCapabilitiesForType(MIME_TYPE);
+            // 2. 优先选择现代、通用的 Flexible 格式
+            for (int colorFormat : caps.colorFormats) {
+                Log.d("===>CodecInfo", "Supported color format: " + Integer.toHexString(colorFormat));
+                if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible) {
+                    format.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat);
+                    break;
+                }
+            }
+            // 3. 如果不支持Flexible，尝试选择 SemiPlanar (NV12) 或 Planar (YV12)
+            if (!format.containsKey(MediaFormat.KEY_COLOR_FORMAT)) {
+                for (int colorFormat : caps.colorFormats) {
+                    if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar ||
+                            colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar) {
+                        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat);
+                        break;
+                    }
+                    if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) {
+                        format.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat);
+                        break;
+                    }
+                }
+            }
+            // --- 关键代码结束 ---
+
+            // 设置CSD数据等其他配置...
+            //format.setByteBuffer("csd-0", csdBuffer);
+
+
             // 配置解码器使用 Surface
             mMediaCodec.configure(format, mDecoderSurface, null, 0);
             mMediaCodec.start();
@@ -276,6 +307,8 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         private final MediaCodec mMediaCodec;
         private final InputStream mH265Stream;
 
+        boolean isKeyFrameCome=false;
+
         public DecoderThread(MediaCodec mediaCodec) {
             this.mMediaCodec = mediaCodec;
             // 从 assets 读取 H.265 裸流文件
@@ -350,7 +383,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                 switch (outputBufferIndex) {
                     case MediaCodec.INFO_OUTPUT_FORMAT_CHANGED:
                         MediaFormat newFormat = mMediaCodec.getOutputFormat();
-                        Log.d(TAG, "Output format changed: " + newFormat);
+                        Log.d(TAG, "===>Output format changed: " + newFormat);
                         break;
 
                     case MediaCodec.INFO_TRY_AGAIN_LATER:
@@ -358,14 +391,22 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                         break;
 
                     case MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED:
-                        Log.d(TAG, "Output buffers changed");
+                        Log.d(TAG, "===>Output buffers changed");
                         break;
 
                     default:
                         if (outputBufferIndex >= 0) {
                             if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                                 sawOutputEOS = true;
-                                Log.d(TAG, "Output EOS reached");
+                                Log.d(TAG, "===>Output EOS reached");
+                            }
+                            if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0){
+                                isKeyFrameCome=true;
+                                Log.d(TAG, "===> key frame is come!");
+                            }
+                            if (!isKeyFrameCome){
+                                Log.d(TAG, "===>Waiting for key frame come ...");
+                                break;
                             }
 
                             // 渲染到 Surface
@@ -391,6 +432,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
 
             if (sleepTime > 0) {
                 try {
+                    System.out.println(String.format("===>sleeptime: %d\n",sleepTime));
                     Thread.sleep(sleepTime);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
