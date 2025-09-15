@@ -331,7 +331,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         }
 
         private void decodeH265Stream() throws IOException {
-            byte[] chunk = new byte[1024 * 1024 ]; // 2m 缓冲区
+            byte[] chunk = new byte[1024 * 1024 ]; // android10 1024 android11 2048 android13 ? android15 ?
             boolean sawInputEOS = false;
             boolean sawOutputEOS = false;
             long startTime = System.currentTimeMillis();
@@ -343,7 +343,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     if (inputBufferIndex >= 0) {
                         ByteBuffer inputBuffer = mMediaCodec.getInputBuffer(inputBufferIndex);
                         if (inputBuffer != null) {
-                            int bytesRead = mH265Stream.read(chunk);
+                            int bytesRead=mH265Stream.read(chunk);
                             if (bytesRead == -1) {
                                 sawInputEOS = true;
                                 mMediaCodec.queueInputBuffer(
@@ -354,6 +354,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                                         MediaCodec.BUFFER_FLAG_END_OF_STREAM
                                 );
                                 Log.d(TAG, "Input EOS reached");
+
                             } else {
                                 inputBuffer.clear();
                                 inputBuffer.put(chunk, 0, bytesRead);
@@ -370,7 +371,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                                 frameCount++;
 
                                 if (frameCount % 30 == 0) {
-                                    Log.d(TAG, "Decoded " + frameCount + " frames");
+                                    Log.d(TAG, "===>Decoded " + frameCount + " frames");
                                 }
                             }
                         }
@@ -404,10 +405,10 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                                 isKeyFrameCome=true;
                                 Log.d(TAG, "===> key frame is come!");
                             }
-                            if (!isKeyFrameCome){
+                            /*if (!isKeyFrameCome){
                                 Log.d(TAG, "===>Waiting for key frame come ...");
                                 break;
-                            }
+                            }*/
 
                             // 渲染到 Surface
                             mMediaCodec.releaseOutputBuffer(outputBufferIndex, true);
