@@ -336,6 +336,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             boolean sawOutputEOS = false;
             long startTime = System.currentTimeMillis();
             int frameCount = 0;
+            int readTimes = 0;
 
             while (!sawOutputEOS && !isInterrupted()) {
                 if (!sawInputEOS) {
@@ -356,6 +357,8 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                                 Log.d(TAG, "Input EOS reached");
 
                             } else {
+                                readTimes++;
+                                System.out.println("===>" + readTimes + " : " + bytesRead);
                                 inputBuffer.clear();
                                 inputBuffer.put(chunk, 0, bytesRead);
 
