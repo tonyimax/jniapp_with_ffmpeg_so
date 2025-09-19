@@ -14,3 +14,4 @@
 .cxx
 local.properties
 /app/src/main/res/sample_h265
+*.265

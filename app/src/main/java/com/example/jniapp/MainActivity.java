@@ -26,6 +26,7 @@ import com.example.jniapp.databinding.ActivityMainBinding;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
+import java.util.Arrays;
 
 public class MainActivity extends AppCompatActivity implements SurfaceHolder.Callback {
 
@@ -52,6 +53,13 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     private MediaCodec mMediaCodec;
     private DecoderThread mDecoderThread;
 
+    byte[] chunk = new byte[1024 * 1024 ];
+    private InputStream mH265Stream;
+
+    int frameCount = 0;
+    boolean isKeyFrameCome=false;
+
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -77,16 +85,14 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             }).start();*/
             MediaCodecList codecList = new MediaCodecList(MediaCodecList.ALL_CODECS);
             for (MediaCodecInfo codecInfo : codecList.getCodecInfos()) {
-                if (!codecInfo.isEncoder()) { // 找解码器
+                if (!codecInfo.isEncoder()) {
                     for (String type : codecInfo.getSupportedTypes()) {
                         if (type.equalsIgnoreCase("video/hevc")) {
                             Log.d("===>HEVC Decoder", "Found decoder: " + codecInfo.getName());
                             MediaCodecInfo.CodecCapabilities caps = codecInfo.getCapabilitiesForType(type);
-                            // 检查支持的Color Formats
                             for (int colorFormat : caps.colorFormats) {
                                 Log.d("===>HEVC Decoder", "Supported color format: " + colorFormat);
                             }
-                            // 检查支持的ProfileLevel
                             for (MediaCodecInfo.CodecProfileLevel pl : caps.profileLevels) {
                                 Log.d("===>HEVC Decoder", "Profile: " + pl.profile + ", Level: " + pl.level);
                             }
@@ -94,6 +100,8 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     }
                 }
             }
+
+            this.mH265Stream = getResources().openRawResource(R.raw.test_720p);
         }
 
     }
@@ -114,27 +122,18 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
     }
 
     private void enableImmersiveMode() {
-        //API 30 TO CALL
+        //Android11或者更高
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             WindowInsetsController controller = null;
             controller = getWindow().getDecorView().getWindowInsetsController();
             if (controller != null) {
-                // 1. 隐藏系统栏（状态栏和导航栏）
                 controller.hide(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
-
-                // 2. 设置系统栏的行为模式
                 controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
             }
-
-            // 确保内容延伸到系统栏后面
             WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         }
     }
 
-    /**
-     * A native method that is implemented by the 'jniapp' native library,
-     * which is packaged with this application.
-     */
     public native String stringFromJNI();
     public native void getVideoBuffer();
 
@@ -178,10 +177,88 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
         }).start();
     }
 
+    private long computePresentationTime(int frameIndex) {
+        return frameIndex * 1000000L / FRAME_RATE;
+    }
+
     private void initMediaCodec() {
         try {
-            // 创建 H.265 解码器
             mMediaCodec = MediaCodec.createDecoderByType(MIME_TYPE);
+            //Android12或者更高
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.S) {
+                mMediaCodec.setCallback(new MediaCodec.Callback() {
+                    @Override
+                    public void onError(@NonNull MediaCodec codec, @NonNull MediaCodec.CodecException e) {
+                        System.out.println("===>onError");
+                    }
+
+                    @Override
+                    public void onInputBufferAvailable(@NonNull MediaCodec codec, int index) {
+                        System.out.println("===>onInputBufferAvailable:"+index);
+                        ByteBuffer inputBuffer = codec.getInputBuffer(index);
+                        int bytesRead= -1;
+                        try {
+                            bytesRead = mH265Stream.read(chunk);
+                            System.out.println("===>" + bytesRead);
+                            if (inputBuffer!=null){
+                                inputBuffer.clear();
+                                inputBuffer.put(chunk, 0, bytesRead);
+
+                                long presentationTimeUs = computePresentationTime(frameCount);
+                                mMediaCodec.queueInputBuffer(
+                                        index,
+                                        0,
+                                        bytesRead,
+                                        presentationTimeUs,
+                                        0
+                                );
+                                frameCount++;
+                                System.out.println("===>帧号:"+frameCount+" 入队PTS:"+presentationTimeUs);
+                            }
+                        } catch (IOException e) {
+                            System.out.println("===>Error:"+e.getMessage());
+                        }
+                    }
+
+                    @Override
+                    public void onOutputBufferAvailable(@NonNull MediaCodec codec, int index, @NonNull MediaCodec.BufferInfo info) {
+                        System.out.println("===>onOutputBufferAvailable: index->"+index+" pts:"+info.presentationTimeUs);
+                        switch (index) {
+                            case MediaCodec.INFO_OUTPUT_FORMAT_CHANGED:
+                                MediaFormat newFormat = mMediaCodec.getOutputFormat();
+                                Log.d(TAG, "===>Output format changed: " + newFormat);
+                                break;
+                            case MediaCodec.INFO_TRY_AGAIN_LATER:
+                                break;
+                            case MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED:
+                                Log.d(TAG, "===>Output buffers changed");
+                                break;
+                            default:
+                                if (index >= 0) {
+                                    if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                        Log.d(TAG, "===>Output EOS reached");
+                                    }
+                                    if ((info.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0){
+                                        isKeyFrameCome=true;
+                                        Log.d(TAG, "===> key frame is come!");
+                                    }
+                                    if (!isKeyFrameCome){
+                                        Log.d(TAG, "===>Waiting for key frame come ...");
+                                        break;
+                                    }
+                                    codec.releaseOutputBuffer(index,info.presentationTimeUs);
+
+                                }
+                                break;
+                        }
+                    }
+
+                    @Override
+                    public void onOutputFormatChanged(@NonNull MediaCodec codec, @NonNull MediaFormat format) {
+                        System.out.println("===>onOutputFormatChanged");
+                    }
+                });
+            }
             // 配置 MediaFormat
             MediaFormat format = MediaFormat.createVideoFormat(MIME_TYPE, VIDEO_WIDTH, VIDEO_HEIGHT);
             format.setInteger(MediaFormat.KEY_FRAME_RATE, FRAME_RATE);
@@ -190,10 +267,8 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             format.setInteger(MediaFormat.KEY_BIT_RATE, 8000000);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1);
 
-            // --- 关键代码开始 ---
-            // 1. 查询解码器支持的颜色格式
-            MediaCodecInfo.CodecCapabilities caps = mMediaCodec.getCodecInfo().getCapabilitiesForType(MIME_TYPE);
-            // 2. 优先选择现代、通用的 Flexible 格式
+
+            /*MediaCodecInfo.CodecCapabilities caps = mMediaCodec.getCodecInfo().getCapabilitiesForType(MIME_TYPE);
             for (int colorFormat : caps.colorFormats) {
                 Log.d("===>CodecInfo", "Supported color format: " + Integer.toHexString(colorFormat));
                 if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible) {
@@ -201,7 +276,6 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     break;
                 }
             }
-            // 3. 如果不支持Flexible，尝试选择 SemiPlanar (NV12) 或 Planar (YV12)
             if (!format.containsKey(MediaFormat.KEY_COLOR_FORMAT)) {
                 for (int colorFormat : caps.colorFormats) {
                     if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar ||
@@ -215,11 +289,7 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
                     }
                 }
             }
-            // --- 关键代码结束 ---
-
-            // 设置CSD数据等其他配置...
-            //format.setByteBuffer("csd-0", csdBuffer);
-
+            //format.setByteBuffer("csd-0", csdBuffer);*/
 
             // 配置解码器使用 Surface
             mMediaCodec.configure(format, mDecoderSurface, null, 0);
@@ -337,90 +407,110 @@ public class MainActivity extends AppCompatActivity implements SurfaceHolder.Cal
             long startTime = System.currentTimeMillis();
             int frameCount = 0;
             int readTimes = 0;
+            if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.S) {
+                while (!sawOutputEOS && !isInterrupted()) {
+                    long presentationTimeUs = computePresentationTime(frameCount);
+                    if (!sawInputEOS) {
+                        int inputBufferIndex = mMediaCodec.dequeueInputBuffer(10000);
+                        if (inputBufferIndex >= 0) {
+                            ByteBuffer inputBuffer = mMediaCodec.getInputBuffer(inputBufferIndex);
+                            if (inputBuffer != null) {
+                                int bytesRead=mH265Stream.read(chunk);
+                                if (bytesRead == -1) {
+                                    sawInputEOS = true;
+                                    mMediaCodec.queueInputBuffer(
+                                            inputBufferIndex,
+                                            0,
+                                            0,
+                                            0,
+                                            MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                                    );
+                                    Log.d(TAG, "Input EOS reached");
 
-            while (!sawOutputEOS && !isInterrupted()) {
-                if (!sawInputEOS) {
-                    int inputBufferIndex = mMediaCodec.dequeueInputBuffer(10000);
-                    if (inputBufferIndex >= 0) {
-                        ByteBuffer inputBuffer = mMediaCodec.getInputBuffer(inputBufferIndex);
-                        if (inputBuffer != null) {
-                            int bytesRead=mH265Stream.read(chunk);
-                            if (bytesRead == -1) {
-                                sawInputEOS = true;
-                                mMediaCodec.queueInputBuffer(
-                                        inputBufferIndex,
-                                        0,
-                                        0,
-                                        0,
-                                        MediaCodec.BUFFER_FLAG_END_OF_STREAM
-                                );
-                                Log.d(TAG, "Input EOS reached");
+                                } else {
+                                    readTimes++;
+                                    System.out.println("===>" + readTimes + " : " + bytesRead);
+                                    inputBuffer.clear();
+                                    inputBuffer.put(chunk, 0, bytesRead);
 
-                            } else {
-                                readTimes++;
-                                System.out.println("===>" + readTimes + " : " + bytesRead);
-                                inputBuffer.clear();
-                                inputBuffer.put(chunk, 0, bytesRead);
+                                    //long presentationTimeUs = computePresentationTime(frameCount);
 
-                                long presentationTimeUs = computePresentationTime(frameCount);
+                                    mMediaCodec.queueInputBuffer(
+                                            inputBufferIndex,
+                                            0,
+                                            bytesRead,
+                                            presentationTimeUs,
+                                            0
+                                    );
+                                    frameCount++;
 
-                                mMediaCodec.queueInputBuffer(
-                                        inputBufferIndex,
-                                        0,
-                                        bytesRead,
-                                        presentationTimeUs,
-                                        0
-                                );
-                                frameCount++;
-
-                                if (frameCount % 30 == 0) {
-                                    Log.d(TAG, "===>Decoded " + frameCount + " frames");
+                                    if (frameCount % 30 == 0) {
+                                        Log.d(TAG, "===>Decoded " + frameCount + " frames");
+                                    }
                                 }
                             }
                         }
                     }
-                }
 
-                MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-                int outputBufferIndex = mMediaCodec.dequeueOutputBuffer(bufferInfo, 10000);
+                    MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+                    int outputBufferIndex = mMediaCodec.dequeueOutputBuffer(bufferInfo, 10000);
 
-                switch (outputBufferIndex) {
-                    case MediaCodec.INFO_OUTPUT_FORMAT_CHANGED:
-                        MediaFormat newFormat = mMediaCodec.getOutputFormat();
-                        Log.d(TAG, "===>Output format changed: " + newFormat);
-                        break;
+                    switch (outputBufferIndex) {
+                        case MediaCodec.INFO_OUTPUT_FORMAT_CHANGED:
+                            MediaFormat newFormat = mMediaCodec.getOutputFormat();
+                            Log.d(TAG, "===>Output format changed: " + newFormat);
+                            break;
 
-                    case MediaCodec.INFO_TRY_AGAIN_LATER:
-                        // 输出缓冲区暂时不可用
-                        break;
+                        case MediaCodec.INFO_TRY_AGAIN_LATER:
+                            // 输出缓冲区暂时不可用
+                            break;
 
-                    case MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED:
-                        Log.d(TAG, "===>Output buffers changed");
-                        break;
+                        case MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED:
+                            Log.d(TAG, "===>Output buffers changed");
+                            break;
 
-                    default:
-                        if (outputBufferIndex >= 0) {
-                            if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                                sawOutputEOS = true;
-                                Log.d(TAG, "===>Output EOS reached");
+                        default:
+                            if (outputBufferIndex >= 0) {
+                                if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                    sawOutputEOS = true;
+                                    Log.d(TAG, "===>Output EOS reached");
+                                }
+                                if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                                    // 处理编解码器配置信息（如SPS/PPS），通常可以忽略或记录
+                                    Log.d(TAG, "===>Output: Codec Config");
+                                    mMediaCodec.releaseOutputBuffer(outputBufferIndex, false); // 不渲染
+                                    continue; // 继续获取下一帧
+                                }
+                                if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0){
+                                    isKeyFrameCome=true;
+                                    Log.d(TAG, "===> key frame is come!");
+                                }
+                                if (!isKeyFrameCome){
+                                    Log.d(TAG, "===>Waiting for key frame come ...");
+                                    break;
+                                }
+
+                                // 渲染到 Surface
+                                //mMediaCodec.releaseOutputBuffer(outputBufferIndex,presentationTimeUs);
+
+                                // 这是一个有效的视频帧！
+                                Log.d(TAG, "===>Output: Got frame with PTS: " + bufferInfo.presentationTimeUs +
+                                        ", size: " + bufferInfo.size);
+
+                                // 2. 渲染或处理帧数据
+                                boolean doRender = (bufferInfo.size > 0); // 只有有数据的帧才渲染
+
+                                // 如果你配置了Surface，用这个方法来渲染并释放缓冲区
+                                mMediaCodec.releaseOutputBuffer(outputBufferIndex, doRender);
+
+                                // 控制播放速率
+                                sleepForFrameRate(bufferInfo, startTime);
                             }
-                            if ((bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0){
-                                isKeyFrameCome=true;
-                                Log.d(TAG, "===> key frame is come!");
-                            }
-                            /*if (!isKeyFrameCome){
-                                Log.d(TAG, "===>Waiting for key frame come ...");
-                                break;
-                            }*/
-
-                            // 渲染到 Surface
-                            mMediaCodec.releaseOutputBuffer(outputBufferIndex, true);
-
-                            // 控制播放速率
-                            sleepForFrameRate(bufferInfo, startTime);
-                        }
-                        break;
-                }
+                            break;
+                    }
+            }
+            }else{
+                System.out.println("===>Android12或者更高，使用异步模式");
             }
             Log.d(TAG, "H.265 decoding completed. Total frames: " + frameCount);
         }
